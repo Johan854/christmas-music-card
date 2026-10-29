@@ -14,6 +14,7 @@ volume_entity: number.esp_suite_volume_dfplayer_suite_2
 alarm_entity: automation.nouvelle_automatisation
 alarm_name: Réveil de Noël
 subtitle: All I Want for Christmas Is You
+duration: 255
 image: /local/noel.jpg
 ```
 
@@ -21,6 +22,7 @@ image: /local/noel.jpg
 | Option | Défaut | Description |
 |---|---|---|
 | `music_entity` | obligatoire | Interrupteur qui lance / arrête la musique |
+| `duration` | `255` | Secondes pendant lesquelles le disque tourne après un appui (le bouton de l'ESP est impulsionnel et ne reste pas sur « on »). `0` : suit l'état de l'interrupteur |
 | `mute_entity` | | Interrupteur « couper le son » |
 | `volume_entity` | | `number` / `input_number` du volume (curseur) |
 | `alarm_entity` | | Automatisation du réveil (interrupteur, date du dernier déclenchement) |
@@ -31,3 +33,6 @@ image: /local/noel.jpg
 | `theme` | `auto` | `auto`, `light`, `dark` |
 
 Le bloc « Nuance de couleur » est identique à celui des autres cartes.
+
+## Bouton impulsionnel (v1.1.0)
+Quand l'interrupteur de l'ESP revient seul sur « off », la carte ne peut pas lire l'état « en lecture ». Un appui lance donc un minuteur de `duration` secondes : le disque et l'égaliseur tournent avec le temps restant et une barre de progression. Un second appui pendant la lecture renvoie l'impulsion (arrêt côté ESP) et stoppe l'animation. Un cycle lancé depuis un autre appareil ou un bouton physique est repris quand la carte voit l'interrupteur passer sur « on », ou à l'ouverture de la page s'il date de moins de `duration` secondes.

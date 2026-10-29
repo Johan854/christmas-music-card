@@ -5,7 +5,7 @@
  * coupure du son, volume (curseur) et réveil de Noël (automatisation). Style verre, thème clair/sombre automatique,
  * éditeur visuel, textes en français.
  */
-const CARD_VERSION = "1.0.0";
+const CARD_VERSION = "1.1.0";
 
 /* === NUANCE COMMUNE v2 (cartes Johan854) ===
  * Bloc identique dans toutes les cartes. Options : nuance, nuance_perso, intensite.
@@ -39,7 +39,8 @@ const GV_LABELS = { nuance: "Nuance de couleur", nuance_perso: "Couleur personna
 /* === FIN NUANCE COMMUNE === */
 const DEFAULTS = {
   name: "Musique de Noël", subtitle: "", theme: "auto", ...GV_DEFAULTS,
-  music_entity: "", // switch / input_boolean : lance la musique
+  music_entity: "", // switch / input_boolean : lance la musique (souvent un bouton impulsionnel côté ESP)
+  duration: 255, // secondes pendant lesquelles le disque tourne après un appui (0 = suit l'état de l'interrupteur)
   mute_entity: "", // switch : coupe le son
   volume_entity: "", // number / input_number
   alarm_entity: "", // automation (réveil de Noël)
@@ -56,7 +57,26 @@ class ChristmasMusicCard extends HTMLElement {
     const f = (re, pre) => Object.keys((hass && hass.states) || {}).find((k) => pre.some((p) => k.startsWith(p)) && re.test(k)) || "";
     return { ...DEFAULTS, music_entity: f(/noel|noël|christmas|musique/i, ["switch.", "input_boolean."]), mute_entity: f(/mute|muet/i, ["switch."]), volume_entity: f(/volume/i, ["number.", "input_number."]) };
   }
-  constructor() { super(); this.attachShadow({ mode: "open" }); this._sig = ""; this._vol = null; }
+  constructor() { super(); this.attachShadow({ mode: "open" }); this._sig = ""; this._vol = null; this._until = 0; this._seen = false; this._wasPlaying = false; }
+  connectedCallback() { this._iv = setInterval(() => this._tick(), 1000); }
+  disconnectedCallback() { clearInterval(this._iv); }
+  _dur() { const d = Number(this._config && this._config.duration); return isFinite(d) && d >= 0 ? d : 255; }
+  _playing() {
+    const ms = this._hass && this._hass.states[this._config.music_entity];
+    if (!ms || ms.state === "unavailable" || ms.state === "unknown") return false;
+    return this._dur() === 0 ? ms.state === "on" : Date.now() < this._until;
+  }
+  _fmtT(sec) { sec = Math.max(0, Math.ceil(sec)); return Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0"); }
+  _tick() {
+    if (!this._config || !this._hass) return;
+    const p = this._playing();
+    if (p !== this._wasPlaying) { this._wasPlaying = p; this._sig = ""; this._render(); return; }
+    if (p && this._dur() > 0) {
+      const rem = (this._until - Date.now()) / 1000, r = this.shadowRoot;
+      const t = r.querySelector("[data-rem]"); if (t) t.textContent = this._fmtT(rem) + " restantes";
+      const b = r.querySelector("[data-bar]"); if (b) b.style.width = Math.max(0, Math.min(100, (1 - rem / this._dur()) * 100)) + "%";
+    }
+  }
 
   setConfig(config) {
     if (!config || !config.music_entity) throw new Error("christmas-music-card : « music_entity » (l'interrupteur de la musique) est obligatoire");
@@ -66,7 +86,16 @@ class ChristmasMusicCard extends HTMLElement {
   }
   set hass(hass) {
     this._hass = hass;
-    if (!this._config || this._dragging) return;
+    if (!this._config) return;
+    const c0 = this._config, ms0 = hass.states[c0.music_entity];
+    if (ms0 && this._dur() > 0) {
+      const lc = Date.parse(ms0.last_changed) || 0;
+      if (!this._seen) { // première lecture : on reprend un cycle commencé il y a moins de « duration » secondes (autre appareil)
+        if (lc && Date.now() - lc < this._dur() * 1000 && ms0.state !== "unavailable" && ms0.state !== "unknown") this._until = lc + this._dur() * 1000;
+      } else if (this._prevState !== "on" && ms0.state === "on" && Date.now() > this._until) this._until = Date.now() + this._dur() * 1000; // impulsion vue en direct
+    }
+    this._seen = true; this._prevState = ms0 && ms0.state;
+    if (this._dragging) return;
     const c = this._config;
     const sig = [c.music_entity, c.mute_entity, c.volume_entity, c.alarm_entity].filter(Boolean).map((e) => { const s = hass.states[e]; return s ? s.state + "|" + (s.attributes.last_triggered || "") : "x"; }).join(";") + (this._isDark() ? "d" : "l");
     if (sig !== this._sig) { this._sig = sig; this._render(); }
@@ -91,7 +120,9 @@ class ChristmasMusicCard extends HTMLElement {
     const c = this._config, h = this._hass;
     if (!c || !h) return;
     const dark = this._isDark();
-    const ms = h.states[c.music_entity], unknown = bad(ms), playing = !unknown && ms.state === "on";
+    const ms = h.states[c.music_entity], unknown = bad(ms), playing = !unknown && this._playing();
+    this._wasPlaying = playing;
+    const remS = playing && this._dur() > 0 ? (this._until - Date.now()) / 1000 : 0;
     const mute = c.mute_entity ? h.states[c.mute_entity] : null, muted = !!(mute && mute.state === "on");
     const vs = c.volume_entity ? h.states[c.volume_entity] : null;
     const al = c.alarm_entity ? h.states[c.alarm_entity] : null, alOn = !!(al && al.state === "on");
@@ -128,6 +159,7 @@ class ChristmasMusicCard extends HTMLElement {
       .info { display:flex; flex-direction:column; gap:.6em; min-width:0; flex:1; }
       .big { font-size:1.2em; font-weight:700; } .eq { display:flex; align-items:flex-end; gap:.25em; height:2.2em; } .eq u { display:block; width:.45em; height:20%; border-radius:.2em; background:var(--xm-gold); text-decoration:none; opacity:.35; }
       .on .eq u { opacity:1; animation:xm-eq .9s ease-in-out infinite alternate; } @keyframes xm-eq { from { height:15%; } to { height:100%; } }
+      .rem { font-size:.78em; color:var(--xm-muted); font-variant-numeric:tabular-nums; } .pbar { display:block; height:.3em; border-radius:.2em; background:var(--xm-fill-b); overflow:hidden; } .pbar u { display:block; height:100%; background:var(--xm-gold); text-decoration:none; transition:width 1s linear; }
       .row { display:flex; align-items:center; gap:.7em; padding:.6em .85em; border-radius:1em; background:var(--xm-glass); border:1px solid var(--xm-glass-b); }
       .vol { flex:1; display:flex; align-items:center; gap:.6em; min-width:0; } .vol b { min-width:2.8em; text-align:right; font-variant-numeric:tabular-nums; font-size:.85em; }
       input[type=range] { flex:1; min-width:0; -webkit-appearance:none; appearance:none; height:.45em; border-radius:.3em; background:linear-gradient(90deg,var(--xm-gold) var(--p),var(--xm-fill-b) var(--p)); outline:none; }
@@ -145,7 +177,7 @@ class ChristmasMusicCard extends HTMLElement {
         <div class="disc"><svg viewBox="0 0 100 100" aria-hidden="true"><g class="rec"><circle cx="50" cy="50" r="47" fill="var(--xm-vinyl)"/><g fill="none" stroke="rgba(255,255,255,.12)" stroke-width=".6"><circle cx="50" cy="50" r="42"/><circle cx="50" cy="50" r="37"/><circle cx="50" cy="50" r="32"/><circle cx="50" cy="50" r="27"/></g>
           <circle cx="50" cy="50" r="17" fill="var(--xm-red)"/><text x="50" y="56" text-anchor="middle" font-size="16" fill="#fff">❄</text><path d="M20 30 A34 34 0 0 1 40 16" stroke="rgba(255,255,255,.25)" stroke-width="2" fill="none" stroke-linecap="round"/></g></svg>
           <button class="play" ${unknown ? "disabled" : ""} data-play aria-label="${playing ? "Arrêter" : "Lancer"} la musique"><ha-icon icon="${playing ? "mdi:stop" : "mdi:play"}"></ha-icon></button></div>
-        <div class="info"><span class="big">${playing ? "Joyeux Noël !" : "Prête à jouer"}</span><div class="eq">${eq}</div></div>
+        <div class="info"><span class="big">${playing ? "Joyeux Noël !" : "Prête à jouer"}</span><div class="eq">${eq}</div>${playing && this._dur() > 0 ? `<span class="rem" data-rem>${this._fmtT(remS)} restantes</span><i class="pbar"><u data-bar style="width:${Math.max(0, Math.min(100, (1 - remS / this._dur()) * 100))}%"></u></i>` : ""}</div>
       </div>
       ${volHtml || mute ? `<div class="row">${volHtml}${mute && !bad(mute) ? `<button class="mute ${muted ? "on" : ""}" data-mute><ha-icon icon="${muted ? "mdi:volume-off" : "mdi:volume-high"}"></ha-icon>${muted ? "Son coupé" : "Couper le son"}</button>` : ""}</div>` : ""}
       ${al && !bad(al) ? `<div class="row"><button class="alarm ${alOn ? "on" : ""}" data-alarm><span class="t"><ha-icon icon="mdi:gift-outline"></ha-icon><span>${esc(c.alarm_name)}<small>${alOn ? "Activé" : "Désactivé"}${al.attributes.last_triggered ? " · dernier : " + esc(this._when(al.attributes.last_triggered)) : ""}</small></span></span><i class="tg"></i></button></div>` : ""}
@@ -153,7 +185,10 @@ class ChristmasMusicCard extends HTMLElement {
     const r = this.shadowRoot;
     r.querySelectorAll("img.bgimg").forEach((im) => im.addEventListener("error", () => { this._imgFailed = c.image; this._sig = ""; this._render(); }));
     const tg = (e) => h.callService("homeassistant", "toggle", { entity_id: e });
-    const p = r.querySelector("[data-play]"); if (p) p.addEventListener("click", () => tg(c.music_entity));
+    const p = r.querySelector("[data-play]"); if (p) p.addEventListener("click", () => {
+      tg(c.music_entity);
+      if (this._dur() > 0) { this._until = this._playing() ? 0 : Date.now() + this._dur() * 1000; this._sig = ""; this._render(); }
+    });
     const m = r.querySelector("[data-mute]"); if (m) m.addEventListener("click", () => tg(c.mute_entity));
     const a = r.querySelector("[data-alarm]"); if (a) a.addEventListener("click", () => h.callService("automation", alOn ? "turn_off" : "turn_on", { entity_id: c.alarm_entity }));
     const inp = r.querySelector("input[type=range]");
@@ -170,7 +205,7 @@ class ChristmasMusicCard extends HTMLElement {
 }
 
 /* ---------- Éditeur visuel ---------- */
-const LABELS = { ...GV_LABELS, name: "Titre", subtitle: "Sous-titre (ex. le morceau, facultatif)", music_entity: "Musique de Noël (interrupteur)", mute_entity: "Couper le son (interrupteur)", volume_entity: "Volume (number / input_number)", alarm_entity: "Réveil de Noël (automatisation)", alarm_name: "Nom du réveil", image: "Image de fond (URL, facultatif)", image_opacity: "Opacité de l'image de fond", snow: "Flocons animés", theme: "Thème" };
+const LABELS = { ...GV_LABELS, name: "Titre", subtitle: "Sous-titre (ex. le morceau, facultatif)", music_entity: "Musique de Noël (interrupteur)", mute_entity: "Couper le son (interrupteur)", volume_entity: "Volume (number / input_number)", alarm_entity: "Réveil de Noël (automatisation)", alarm_name: "Nom du réveil", duration: "Durée du disque après un appui (secondes, 0 = état de l'interrupteur)", image: "Image de fond (URL, facultatif)", image_opacity: "Opacité de l'image de fond", snow: "Flocons animés", theme: "Thème" };
 class ChristmasMusicCardEditor extends HTMLElement {
   setConfig(config) { this._config = { ...DEFAULTS, ...config }; if (!this._form) this._build(); else this._form.data = this._config; }
   set hass(h) { this._hass = h; if (this._form) this._form.hass = h; }
@@ -179,6 +214,7 @@ class ChristmasMusicCardEditor extends HTMLElement {
     el.hass = this._hass; el.data = this._config; el.computeLabel = (s) => LABELS[s.name] || s.name;
     el.schema = [
       { name: "music_entity", required: true, selector: { entity: { domain: ["switch", "input_boolean"] } } },
+      { name: "duration", selector: { number: { min: 0, max: 1800, mode: "box" } } },
       { name: "volume_entity", selector: { entity: { domain: ["number", "input_number"] } } },
       { name: "mute_entity", selector: { entity: { domain: ["switch", "input_boolean"] } } },
       { type: "grid", name: "", schema: [{ name: "alarm_entity", selector: { entity: { domain: "automation" } } }, { name: "alarm_name", selector: { text: {} } }] },
